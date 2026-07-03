@@ -55,8 +55,7 @@ weekly_gitlab_report.md
 1. 本周 MR
 2. MR 关联 commits
 3. 本周 direct commits
-4. Events 补充时间线
-5. 给 AI 的周报生成提示词
+4. 给 AI 的周报生成提示词
 ```
 
 你后面直接把这个 md 丢给 AI，让它总结成：

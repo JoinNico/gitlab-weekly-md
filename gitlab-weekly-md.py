@@ -22,7 +22,6 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
-from urllib.parse import quote
 
 import requests
 
@@ -108,9 +107,6 @@ def to_gitlab_time(dt):
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def to_gitlab_date(dt):
-    return dt.astimezone(timezone.utc).date().isoformat()
-
 
 class GitLabClient:
     def __init__(self, base_url, token):
@@ -172,17 +168,6 @@ class GitLabClient:
         if not users:
             raise RuntimeError(f"找不到 GitLab 用户：{username}")
         return users[0]
-
-    def list_user_events(self, user_id_or_username, since, until):
-        return self.get(
-            f"/users/{quote(str(user_id_or_username), safe='')}/events",
-            params={
-                "after": to_gitlab_date(since),
-                "before": to_gitlab_date(until),
-                "sort": "desc",
-            },
-            paginated=True,
-        )
 
     def list_my_merge_requests(self, username, since, until):
         return self.get(
@@ -315,7 +300,7 @@ def collect_project_commits(gl, project_ids, since, until, user):
     return project_meta, commits_by_project
 
 
-def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commits_by_project, events):
+def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commits_by_project):
     lines = []
 
     lines.append("# GitLab Weekly Raw Report")
@@ -348,14 +333,15 @@ def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commi
             lines.append(f"- 创建时间：{mr.get('created_at')}")
             lines.append(f"- 更新时间：{mr.get('updated_at')}")
             lines.append(f"- 合并时间：{mr.get('merged_at')}")
-            lines.append(f"- 链接：{mr.get('web_url')}")
             lines.append("")
 
-            description = safe_text(mr.get("description"))
+            description = mr.get("description")
             if description:
+                description = str(description).strip()
                 lines.append("MR 描述摘要：")
                 lines.append("")
-                lines.append(f"> {description[:500]}")
+                for desc_line in description.splitlines():
+                    lines.append(f"> {desc_line}")
                 lines.append("")
 
             commits = mr_commits_map.get(key, [])
@@ -408,35 +394,7 @@ def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commi
             lines.append("本周没有抓取到 direct commit。")
             lines.append("")
 
-    lines.append("## 3. Events 补充活动流")
-    lines.append("")
-    lines.append("> 注意：Events API 不适合作为 MR/Commit 的唯一依据，这里只作为时间线补充。")
-    lines.append("")
-
-    if not events:
-        lines.append("本周没有抓取到 event。")
-        lines.append("")
-    else:
-        for e in events[:150]:
-            created_at = e.get("created_at", "")
-            action = e.get("action_name", "")
-            target_type = e.get("target_type", "")
-            target_title = safe_text(e.get("target_title"))
-            project_id = e.get("project_id", "")
-
-            push_data = e.get("push_data") or {}
-            commit_title = safe_text(push_data.get("commit_title"))
-            ref = safe_text(push_data.get("ref"))
-
-            text = target_title or commit_title
-            if ref:
-                text = f"{text} [{ref}]"
-
-            lines.append(f"- {created_at} | project={project_id} | {action} | {target_type or 'push'} | {text}")
-
-        lines.append("")
-
-    lines.append("## 4. 给 AI 的周报生成提示词")
+    lines.append("## 3. 给 AI 的周报生成提示词")
     lines.append("")
     lines.append("请根据以上 GitLab 原始记录，生成一份中文周报。")
     lines.append("")
@@ -536,15 +494,7 @@ def main():
         user=user,
     )
 
-    # 7. 抓 events 作为补充
-    print("[INFO] Fetching user events...")
-    try:
-        events = gl.list_user_events(username, since, until)
-    except Exception as e:
-        print(f"[WARN] Failed to get user events: {e}", file=sys.stderr)
-        events = []
-
-    # 8. 输出 Markdown
+    # 7. 输出 Markdown
     md = render_markdown(
         user=user,
         since=since,
@@ -553,7 +503,6 @@ def main():
         mr_commits_map=mr_commits_map,
         project_meta=project_meta,
         commits_by_project=commits_by_project,
-        events=events,
     )
 
     with open(args.output, "w", encoding="utf-8") as f:
