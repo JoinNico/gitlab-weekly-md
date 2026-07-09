@@ -1,3 +1,5 @@
+——
+
 ## 使用方法
 
 安装依赖：
@@ -17,7 +19,7 @@ export GITLAB_USERNAME="yunhao.gu"
 先跑最近 7 天：
 
 ```bash
-python3 gitlab_weekly_md.py --days 7
+python3 gitlab-weekly-md.py --days 7
 ```
 
 指定本周时间：

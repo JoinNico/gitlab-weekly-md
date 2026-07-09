@@ -79,6 +79,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--timezone",
+        default=os.getenv("GITLAB_TIMEZONE", ""),
+        help="Timezone for display, e.g., 'Beijing', 'Asia/Shanghai', 'UTC+8'. Default: auto-detect from GitLab.",
+    )
+
+    parser.add_argument(
         "--max-projects",
         type=int,
         default=80,
@@ -105,6 +111,132 @@ def parse_datetime(value, is_end=False):
 
 def to_gitlab_time(dt):
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def to_gitlab_date(dt):
+    return dt.astimezone(timezone.utc).date().isoformat()
+
+
+def format_local_time(iso_time_str, tz_offset_hours=0):
+    """Convert ISO time string to local time with offset.
+
+    Args:
+        iso_time_str: ISO format time string (e.g., "2026-07-05T03:13:12Z")
+        tz_offset_hours: Timezone offset in hours (e.g., 8 for UTC+8)
+
+    Returns:
+        Formatted local time string, or original string if parsing fails
+    """
+    if not iso_time_str or iso_time_str == "None":
+        return iso_time_str
+
+    try:
+        # Parse ISO format time
+        dt = datetime.fromisoformat(iso_time_str.replace("Z", "+00:00"))
+        # Apply timezone offset
+        local_dt = dt + timedelta(hours=tz_offset_hours)
+        # Format as readable string
+        return local_dt.strftime("%Y-%m-%d %H:%M:%S") + f" (UTC+{tz_offset_hours})"
+    except Exception:
+        return iso_time_str
+
+
+def parse_timezone_offset(timezone_str):
+    """Parse GitLab timezone string to numeric UTC offset in hours.
+
+    GitLab returns timezone as IANA timezone names (e.g., "Asia/Shanghai")
+    or sometimes as abbreviations. This function converts common ones to offsets.
+
+    Args:
+        timezone_str: Timezone string from GitLab API or command line
+
+    Returns:
+        Numeric UTC offset in hours (e.g., 8 for UTC+8), defaults to 0
+    """
+    if not timezone_str:
+        return 0
+
+    # Common timezone mappings (IANA names and abbreviations)
+    tz_map = {
+        # Asia
+        "Beijing": 8,
+        "Asia/Shanghai": 8,
+        "Asia/Chongqing": 8,
+        "Asia/Hong_Kong": 8,
+        "Asia/Taipei": 8,
+        "Asia/Singapore": 8,
+        "Asia/Tokyo": 9,
+        "Asia/Seoul": 9,
+        "Asia/Kolkata": 5.5,
+        "Asia/Dubai": 4,
+        # Europe
+        "Europe/London": 0,
+        "Europe/Paris": 1,
+        "Europe/Berlin": 1,
+        "Europe/Moscow": 3,
+        # Americas
+        "America/New_York": -5,
+        "America/Chicago": -6,
+        "America/Denver": -7,
+        "America/Los_Angeles": -8,
+        "America/Sao_Paulo": -3,
+        # Pacific
+        "Pacific/Auckland": 12,
+        "Australia/Sydney": 10,
+        # Common abbreviations
+        "CST": 8,  # China Standard Time
+        "JST": 9,  # Japan Standard Time
+        "EST": -5,  # Eastern Standard Time
+        "PST": -8,  # Pacific Standard Time
+        "UTC": 0,
+        "GMT": 0,
+    }
+
+    # Try direct lookup (case-insensitive)
+    tz_lower = timezone_str.lower()
+    for key, value in tz_map.items():
+        if key.lower() == tz_lower:
+            return value
+
+    # Try to parse offset format like "UTC+8" or "+08:00"
+    if "+" in timezone_str or (timezone_str.count("-") > 0 and ":" in timezone_str):
+        try:
+            # Handle formats like "UTC+8", "+08:00", "-05:00"
+            parts = timezone_str.replace("UTC", "").split(":")
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            return hours + (minutes / 60.0 if hours >= 0 else -minutes / 60.0)
+        except Exception:
+            pass
+
+    # Default to UTC
+    print(f"[WARN] Unknown timezone '{timezone_str}', defaulting to UTC", file=sys.stderr)
+    return 0
+
+
+def infer_timezone_from_location(location):
+    """Infer timezone from user's location field.
+
+    Args:
+        location: Location string from GitLab user profile
+
+    Returns:
+        Timezone string or None if cannot infer
+    """
+    if not location:
+        return None
+
+    location_lower = location.lower()
+
+    # Common location patterns
+    if any(keyword in location_lower for keyword in ["上海", "shanghai", "北京", "beijing", "中国", "china"]):
+        return "Beijing"
+    elif any(keyword in location_lower for keyword in ["东京", "tokyo", "日本", "japan"]):
+        return "Asia/Tokyo"
+    elif any(keyword in location_lower for keyword in ["new york", "纽约"]):
+        return "America/New_York"
+
+    return None
 
 
 
@@ -162,6 +294,11 @@ class GitLabClient:
 
     def get_current_user(self):
         return self.get("/user", paginated=False)
+
+    def get_user_timezone(self):
+        """Get the current user's timezone from GitLab settings."""
+        user = self.get_current_user()
+        return user.get("timezone", "UTC")
 
     def get_user_by_username(self, username):
         users = self.get("/users", params={"username": username}, paginated=True)
@@ -300,7 +437,7 @@ def collect_project_commits(gl, project_ids, since, until, user):
     return project_meta, commits_by_project
 
 
-def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commits_by_project):
+def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commits_by_project, tz_offset=0):
     lines = []
 
     lines.append("# GitLab Weekly Raw Report")
@@ -308,7 +445,7 @@ def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commi
     lines.append("## 基本信息")
     lines.append("")
     lines.append(f"- 用户：{user.get('name', '')} (@{user.get('username', '')})")
-    lines.append(f"- 时间范围：{to_gitlab_time(since)} ~ {to_gitlab_time(until)}")
+    lines.append(f"- 时间范围：{format_local_time(to_gitlab_time(since), tz_offset)} ~ {format_local_time(to_gitlab_time(until), tz_offset)}")
     lines.append("")
 
     lines.append("## 1. 本周 Merge Requests")
@@ -318,21 +455,52 @@ def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commi
         lines.append("本周没有抓取到 MR。")
         lines.append("")
     else:
+        shown_any = False
         for mr in mrs:
+            # Skip closed (abandoned) MRs
+            if mr.get("state") == "closed":
+                continue
+
             project_id = mr.get("project_id")
             iid = mr.get("iid")
             key = f"{project_id}!{iid}"
             ref = mr.get("references", {}).get("full", f"!{iid}")
 
+            # Find the latest commit time in this MR
+            commits = mr_commits_map.get(key, [])
+            latest_commit_time = None
+            if commits:
+                commit_times = []
+                for c in commits:
+                    commit_time = c.get("committed_date") or c.get("created_at")
+                    if commit_time:
+                        commit_times.append(commit_time)
+                if commit_times:
+                    latest_commit_time = max(commit_times)
+
+            # Filter out MRs whose latest commit is outside the time range
+            # (e.g., MR was only reviewed/approved this week, but actual code was committed earlier)
+            if latest_commit_time:
+                try:
+                    lct = datetime.fromisoformat(latest_commit_time.replace("Z", "+00:00"))
+                    if lct < since or lct > until:
+                        continue
+                except Exception:
+                    pass  # If parsing fails, show the MR anyway
+
+            shown_any = True
             lines.append(f"### {ref} {safe_text(mr.get('title'))}")
             lines.append("")
             lines.append(f"- 项目 ID：`{project_id}`")
             lines.append(f"- 状态：`{mr.get('state')}`")
             lines.append(f"- 源分支：`{mr.get('source_branch')}`")
             lines.append(f"- 目标分支：`{mr.get('target_branch')}`")
-            lines.append(f"- 创建时间：{mr.get('created_at')}")
-            lines.append(f"- 更新时间：{mr.get('updated_at')}")
-            lines.append(f"- 合并时间：{mr.get('merged_at')}")
+            lines.append(f"- 创建时间：{format_local_time(mr.get('created_at'), tz_offset)}")
+            if latest_commit_time:
+                lines.append(f"- 最后提交时间：{format_local_time(latest_commit_time, tz_offset)}")
+            lines.append(f"- 更新时间：{format_local_time(mr.get('updated_at'), tz_offset)}")
+            if mr.get("merged_at"):
+                lines.append(f"- 合并时间：{format_local_time(mr.get('merged_at'), tz_offset)}")
             lines.append("")
 
             description = mr.get("description")
@@ -353,6 +521,10 @@ def render_markdown(user, since, until, mrs, mr_commits_map, project_meta, commi
                 for c in commits:
                     lines.append(f"- `{short_sha(c.get('id'))}` {safe_text(c.get('title'))}")
 
+            lines.append("")
+
+        if not shown_any:
+            lines.append("本周没有符合条件的 MR（所有 MR 的最后提交时间均不在本周范围内）。")
             lines.append("")
 
     lines.append("## 2. 本周 Direct Commits")
@@ -450,9 +622,37 @@ def main():
     if not username:
         raise RuntimeError("无法确定 GitLab username。")
 
+    # Get timezone: CLI arg > location inference > GitLab API > UTC
+    if args.timezone:
+        # User explicitly specified timezone via --timezone or GITLAB_TIMEZONE
+        tz_str = args.timezone
+        tz_source = "CLI argument"
+    else:
+        # Try to infer from location
+        location = user.get("location", "")
+        tz_str = infer_timezone_from_location(location)
+        if tz_str:
+            tz_source = f"inferred from location '{location}'"
+        else:
+            # Try GitLab API fields (older versions might have it)
+            tz_str = (
+                current_user.get("timezone") or
+                current_user.get("time_zone") or
+                user.get("timezone") or
+                user.get("time_zone")
+            )
+            if tz_str:
+                tz_source = "GitLab API"
+            else:
+                tz_str = "UTC"
+                tz_source = "default"
+
+    tz_offset = parse_timezone_offset(tz_str)
+
     print(f"[INFO] GitLab: {args.gitlab_url}")
     print(f"[INFO] User: {user.get('name')} (@{username})")
-    print(f"[INFO] Range: {to_gitlab_time(since)} ~ {to_gitlab_time(until)}")
+    print(f"[INFO] Timezone: {tz_str} (UTC{tz_offset:+g}) [{tz_source}]")
+    print(f"[INFO] Range: {format_local_time(to_gitlab_time(since), tz_offset)} ~ {format_local_time(to_gitlab_time(until), tz_offset)}")
 
     # 3. 抓 MR
     print("[INFO] Fetching merge requests...")
@@ -503,6 +703,7 @@ def main():
         mr_commits_map=mr_commits_map,
         project_meta=project_meta,
         commits_by_project=commits_by_project,
+        tz_offset=tz_offset,
     )
 
     with open(args.output, "w", encoding="utf-8") as f:
