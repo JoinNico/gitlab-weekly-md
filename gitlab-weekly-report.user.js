@@ -22,8 +22,6 @@
     /* Floating button */
     #glwr-float-btn {
       position: fixed !important;
-      right: 24px !important;
-      bottom: 24px !important;
       z-index: 2147483647 !important;
       width: 56px !important;
       height: 56px !important;
@@ -31,12 +29,12 @@
       background: #1f75cb !important;
       color: #fff !important;
       border: none !important;
-      cursor: pointer !important;
+      cursor: grab !important;
       font-size: 13px !important;
       font-weight: 600 !important;
       line-height: 1.2 !important;
       box-shadow: 0 4px 12px rgba(0,0,0,0.25) !important;
-      transition: transform 0.2s, box-shadow 0.2s !important;
+      transition: box-shadow 0.2s !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
@@ -47,10 +45,17 @@
       padding: 0 !important;
       margin: 0 !important;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+      touch-action: none !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
     }
     #glwr-float-btn:hover {
-      transform: scale(1.08) !important;
       box-shadow: 0 6px 20px rgba(0,0,0,0.35) !important;
+    }
+    #glwr-float-btn.glwr-dragging {
+      cursor: grabbing !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4) !important;
+      transition: none !important;
     }
 
     /* Overlay */
@@ -1195,6 +1200,24 @@
       floatBtn.innerHTML = 'GitLab<br>周报';
       floatBtn.title = 'GitLab 周报助手';
       floatBtn.type = 'button';
+
+      // Restore saved position or default to bottom-right
+      let savedPos = null;
+      try {
+        const raw = GM_getValue('glwr_btn_pos', null);
+        if (raw) savedPos = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      } catch (e) { /* ignore */ }
+      if (savedPos && typeof savedPos.x === 'number' && typeof savedPos.y === 'number') {
+        // Clamp to viewport
+        const x = Math.max(0, Math.min(savedPos.x, window.innerWidth - 56));
+        const y = Math.max(0, Math.min(savedPos.y, window.innerHeight - 56));
+        floatBtn.style.left = x + 'px';
+        floatBtn.style.top = y + 'px';
+      } else {
+        floatBtn.style.left = (window.innerWidth - 56 - 24) + 'px';
+        floatBtn.style.top = (window.innerHeight - 56 - 24) + 'px';
+      }
+
       document.body.appendChild(floatBtn);
 
       // Create overlay
@@ -1355,7 +1378,7 @@
           <!-- Advanced Settings -->
           <div class="glwr-section">
             <details>
-              <summary>▼ 高级设置</summary>
+              <summary>高级设置</summary>
 
               <div class="glwr-advanced-field">
                 <label>GitLab Base URL</label>
@@ -1545,14 +1568,87 @@
       this._callbacks = callbacks || {};
       const el = this._elements;
 
-      // Open/close
-      // Use capture phase + stopImmediatePropagation to prevent GitLab from intercepting
-      el.floatBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        e.preventDefault();
-        this.open();
-      }, true);
+      // Draggable floating button — distinguish click from drag
+      (() => {
+        const btn = el.floatBtn;
+        let startX = 0, startY = 0;
+        let btnStartLeft = 0, btnStartTop = 0;
+        let dragging = false;
+        let moved = false;
+
+        const DRAG_THRESHOLD = 5; // px
+
+        function onPointerDown(e) {
+          // Only handle left mouse button or touch
+          if (e.type === 'mousedown' && e.button !== 0) return;
+
+          e.preventDefault();
+          e.stopPropagation();
+
+          const point = e.touches ? e.touches[0] : e;
+          startX = point.clientX;
+          startY = point.clientY;
+          btnStartLeft = btn.offsetLeft;
+          btnStartTop = btn.offsetTop;
+          dragging = true;
+          moved = false;
+
+          document.addEventListener('mousemove', onPointerMove, { passive: false });
+          document.addEventListener('mouseup', onPointerUp);
+          document.addEventListener('touchmove', onPointerMove, { passive: false });
+          document.addEventListener('touchend', onPointerUp);
+        }
+
+        function onPointerMove(e) {
+          if (!dragging) return;
+          e.preventDefault();
+
+          const point = e.touches ? e.touches[0] : e;
+          const dx = point.clientX - startX;
+          const dy = point.clientY - startY;
+
+          if (!moved && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+            moved = true;
+            btn.classList.add('glwr-dragging');
+          }
+
+          if (moved) {
+            // Clamp to viewport
+            let newLeft = Math.max(0, Math.min(btnStartLeft + dx, window.innerWidth - 56));
+            let newTop = Math.max(0, Math.min(btnStartTop + dy, window.innerHeight - 56));
+            btn.style.left = newLeft + 'px';
+            btn.style.top = newTop + 'px';
+          }
+        }
+
+        function onPointerUp(e) {
+          document.removeEventListener('mousemove', onPointerMove);
+          document.removeEventListener('mouseup', onPointerUp);
+          document.removeEventListener('touchmove', onPointerMove);
+          document.removeEventListener('touchend', onPointerUp);
+
+          btn.classList.remove('glwr-dragging');
+
+          if (moved) {
+            // Save position
+            try {
+              GM_setValue('glwr_btn_pos', JSON.stringify({ x: btn.offsetLeft, y: btn.offsetTop }));
+            } catch (err) { /* ignore */ }
+          } else {
+            // It was a click — open drawer
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            DrawerUI.open();
+          }
+
+          dragging = false;
+          moved = false;
+        }
+
+        btn.addEventListener('mousedown', onPointerDown, true);
+        btn.addEventListener('touchstart', onPointerDown, { passive: false });
+      })();
+
       el.closeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
