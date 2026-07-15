@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         GitLab 周报助手
-// @namespace    https://github.com/JoinNico/gitlab-weekly-md
 // @version      0.1.0
 // @description  在 GitLab 页面中一键生成周报 Markdown 原始材料
 // @match        *://*/*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=gitlab.com
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addStyle
@@ -1727,7 +1727,24 @@
           return;
         }
         const ok = await Download.copyText(text);
-        this.showToast(ok ? '已复制到剪贴板' : '复制失败', ok ? 'success' : 'error');
+        if (ok) {
+          const btn = el.copyBtn;
+          const origText = btn.textContent;
+          const origBg = btn.style.background;
+          const origBorder = btn.style.borderColor;
+          btn.textContent = '复制成功';
+          btn.style.background = '#28a745';
+          btn.style.borderColor = '#28a745';
+          btn.disabled = true;
+          setTimeout(() => {
+            btn.textContent = origText;
+            btn.style.background = origBg;
+            btn.style.borderColor = origBorder;
+            btn.disabled = false;
+          }, 1000);
+        } else {
+          this.showToast('复制失败', 'error');
+        }
       });
 
       // Download MD
